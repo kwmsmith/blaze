@@ -11,6 +11,8 @@ familiar interface to query data living in other data storage systems.
 Example
 =======
 
+Foobar!
+
 We point blaze to a simple dataset in a foreign database (PostgreSQL).
 Instantly we see results as we would see them in a Pandas DataFrame.
 
