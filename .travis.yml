@@ -15,6 +15,8 @@ matrix:
       env: SPARK_VERSION=1.4
     - python: 3.4
       env: SPARK_VERSION=1.5
+    - python: 3.5
+      env: PANDAS_VERSION="git+https://github.com/pydata/pandas" SPARK_VERSION=1.5
     - python: 2.7
       env: PANDAS_VERSION="git+https://github.com/pydata/pandas" SPARK_VERSION=1.5
     - python: 3.4
@@ -45,7 +47,7 @@ install:
   - if [ -n "$PANDAS_VERSION" ]; then conda remove -n blaze pandas; fi
   - source activate blaze
 
-  - if [[ $TRAVIS_PYTHON_VERSION == '2.7' || $TRAVIS_PYTHON_VERSION == '3.4' ]]; then conda install spark=$SPARK_VERSION -c blaze -c anaconda-cluster; fi
+  - if [[ $TRAVIS_PYTHON_VERSION == '2.7' || $TRAVIS_PYTHON_VERSION == '3.4' || $TRAVIS_PYTHON_VERSION == '3.5' ]]; then conda install spark=$SPARK_VERSION -c blaze -c anaconda-cluster; fi
   - if [[ $TRAVIS_PYTHON_VERSION == '2.7' ]]; then conda install pyhive -c blaze; fi
 
   - pip install psycopg2

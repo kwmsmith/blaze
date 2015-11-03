@@ -6,8 +6,8 @@ a new version of Blaze.
 
 1. Update version numbers in the following locations:
 
- * /setup.py
- * /blaze/__init__.py
+   * /setup.py
+   * /blaze/__init__.py
 
 2. Confirm the dependencies and their version numbers in
    /docs/source/install.rst
@@ -26,7 +26,7 @@ a new version of Blaze.
 
         git tag -a x.x.x -m 'Version x.x.x'
 
-    And push those tags
+   And push those tags
 
         git push --tags
 
