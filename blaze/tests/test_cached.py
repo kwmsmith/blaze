@@ -1,6 +1,9 @@
-from blaze.cached import CachedDataset
+import pytest
+
+from blaze.cached import Cache
 from blaze import symbol, discover, compute, into
 import pandas as pd
+import pandas.util.testing as tm
 from collections import Iterator
 
 
@@ -9,32 +12,24 @@ df = pd.DataFrame([['Alice', 100, 1],
                    ['Alice', 50, 3]],
                   columns=['name', 'amount', 'id'])
 
-
 t = symbol('t', discover(df))
+x = symbol('x', 'int')
+ns = {t: df, x: 10}
+
+@pytest.fixture
+def cache():
+    return Cache()
 
 
-def test_dataset():
-    ns = {'t': df, 'x': 10}
-    cache=dict()
-    d = CachedDataset(ns, cache=cache)
-
-    assert discover(d) == discover(ns)
-
-    s = symbol('s', discover(d))
-    compute(s.x * 2, d) == 20
-    cache == {s.x * 2: 20}
+def test_cached_compute_symbol(cache):
+    assert compute(x, ns, cache) == compute(x, ns)
+    assert cache.cache == {x: 10}
+    tm.assert_frame_equal(compute(t, ns, cache), compute(t, ns))
+    assert cache.cache.keys() == ns.keys()
 
 
-def test_streaming():
-    seq = [{'name': 'Alice', 'x': 1},
-           {'name': 'Bob', 'x': 1}]
-    ns = {'t': seq, 'x': 10}
-    cache=dict()
-    d = CachedDataset(ns, cache=cache)
-
-    s = symbol('s', discover(d))
-    expr = s.t.x * 2
-    result = compute(expr, d)
-
-    assert not isinstance(d.cache[expr], Iterator)
-    assert into(list, d.cache[expr]) == [2, 2]
+def test_cached_compute_exprs(cache):
+    assert compute(x * 2, ns, cache) == compute(x * 2, ns)
+    assert (compute(t.amount.min() + x, ns, cache) ==
+            compute(t.amount.min() + x, ns))
+    assert cache.cache.keys() == {x * 2, t.amount.min() + x}

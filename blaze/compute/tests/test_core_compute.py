@@ -113,18 +113,18 @@ def test_compute_up_on_dict():
 def test_pre_compute_on_multiple_datasets_is_selective():
     from odo import CSV
     from blaze import data
-    from blaze.cached import CachedDataset
+    from blaze.cached import Cache
+
+    cache = Cache()
 
     df = pd.DataFrame([[1, 'Alice',   100],
                          [2, 'Bob',    -200],
                          [3, 'Charlie', 300],
                          [4, 'Denis',   400],
                          [5, 'Edith',  -500]], columns=['id', 'name', 'amount'])
-    iris = CSV(example('iris.csv'))
-    dset = CachedDataset({'df': df, 'iris': iris})
-
-    d = data(dset)
-    assert str(compute(d.df.amount)) == str(df.amount)
+    dset = data({'df': df,
+                 'iris': CSV(example('iris.csv'))})
+    assert str(compute(dset.df.amount, cache)) == str(df.amount)
 
 
 def test_raises_on_valid_expression_but_no_implementation():

@@ -3,7 +3,7 @@ from __future__ import print_function, division, absolute_import
 import numpy as np
 import pandas as pd
 
-from datashape import dshape, discover, integral, floating, boolean, complexes
+from datashape import dshape, integral, floating, boolean, complexes
 from datashape.predicates import isscalar, isrecord, iscollection
 
 from .dispatch import dispatch
@@ -12,6 +12,11 @@ from .compute import compute
 from .compatibility import unicode
 
 from odo import odo
+
+class Cache(object):
+
+    def __init__(self, cache=None):
+        self.cache = cache if cache is not None else {}
 
 
 class CachedDataset(object):
@@ -22,40 +27,26 @@ class CachedDataset(object):
         self.cache = cache if cache is not None else {}
 
 
-@dispatch(CachedDataset)
-def discover(d, **kwargs):
-    return discover(d.data, **kwargs)
+def cached_dataset(data, cache=None):
+    return CachedDataset(data=data, cache=cache)
 
 
-@dispatch(Field, CachedDataset)
-def compute_up(expr, data, **kwargs):
-    return data.data[expr._name]
-
-
-@dispatch(Expr, CachedDataset)
-def compute_down(expr, data, **kwargs):
+@dispatch(Expr, dict, Cache)
+def compute(expr, data, cd, **kwargs):
     try:
-        return data.cache[expr]
+        return cd.cache[expr]
     except KeyError:
         pass
-
-    leaf, = expr._leaves()
-
-    # Do work
-    result = compute(expr, {leaf: data.data}, **kwargs)
-
-    ds = expr.dshape
-    new_type = concrete_type(ds)
-
-    # If the result is not the concrete data type for the datashape then make
-    # it concrete
-    if not isinstance(result, new_type):
-        result = odo(result, new_type, dshape=ds)
-
-    # Cache result
-    data.cache[expr] = result
-
+    return_type = kwargs.pop('return_type', 'core')
+    result = compute(expr, data, return_type=return_type, **kwargs)
+    cd.cache[expr] = result
     return result
+
+
+@dispatch(Expr, Cache)
+def compute(expr, cd, **kwargs):
+    resources = expr._resources()
+    return compute(expr, resources, cd, **kwargs)
 
 
 def concrete_type(ds):
@@ -82,6 +73,8 @@ def concrete_type(ds):
     <class 'pandas.core.series.Series'>
     >>> concrete_type('var * {name: string, amount: int}')
     <class 'pandas.core.frame.DataFrame'>
+    >>> concrete_type('{name: string, amount: int}')
+    <class 'pandas.core.series.Series'>
     >>> concrete_type('float64')
     <... 'float'>
     >>> concrete_type('float32')
@@ -115,8 +108,8 @@ def concrete_type(ds):
             return complex
         else:
             return ds.measure.to_numpy_dtype().type
-    if not iscollection(ds):
-        return type(ds)
+    if ndim(ds) == 0 and isrecord(ds.measure):
+        return pd.Series
     if ndim(ds) == 1:
         return pd.DataFrame if isrecord(ds.measure) else pd.Series
     if ndim(ds) > 1:
