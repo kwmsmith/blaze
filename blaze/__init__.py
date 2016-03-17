@@ -66,7 +66,7 @@ from .compute.pandas import *
 from .compute.numpy import *
 from .compute.core import *
 from .compute.core import compute
-from .cached import CachedDataset
+from .cached import Cache
 
 with ignoring(ImportError):
     from .server import *
