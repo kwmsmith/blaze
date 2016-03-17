@@ -377,6 +377,19 @@ def test_discover_dshape_symbol(ds):
     assert t_ds.fields is not None
 
 
+def test_discover_dict_with_symbols():
+    r = Symbol('r', 'float64')
+    s = Symbol('s', 'int64')
+    t = Symbol('t', 'string')
+    d_sym = {r: 42.0,
+             s: 10,
+             t: 'spam'}
+    d_str = {'r': 42.0,
+             's': 10,
+             't': 'spam'}
+    assert discover(d_sym) == discover(d_str)
+
+
 class TestScalarArithmetic(object):
     ops = {'+': add, '-': sub, '*': mul, '/': truediv, '//': floordiv, '%': mod,
            '**': pow, '==': eq, '!=': ne, '<': lt, '>': gt, '<=': le, '>=': ge}

@@ -983,3 +983,20 @@ method_properties.update([shape, ndim])
 @dispatch(Expr)
 def discover(expr):
     return expr.dshape
+
+@dispatch(object)
+def get_name(s):
+    raise NotImplementedError("Don't know how to get_name for %s" % s)
+
+@dispatch(str)
+def get_name(s):
+    return s
+
+@dispatch(Symbol)
+def get_name(s):
+    return s._name
+
+@dispatch(dict)
+def discover(d, **kwargs):
+    disc = toolz.keymap(get_name, d)
+    return Record([[k, discover(disc[k])] for k in sorted(disc)])
