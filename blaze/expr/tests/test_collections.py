@@ -141,6 +141,14 @@ def test_raise_error_if_join_on_no_columns():
     assert raises(ValueError, lambda: join(a, b))
 
 
+def test_join_str_option_types():
+    a = symbol('a', 'var * {name: ?string}')
+    b = symbol('b', 'var * {name: string}')
+
+    assert join(a, b, 'name').dshape == dshape('var * {name: string}')
+    assert join(b, a, 'name').dshape == dshape('var * {name: string}')
+
+
 def test_join_option_types():
     a = symbol('a', 'var * {x: ?int}')
     b = symbol('b', 'var * {x: int}')
