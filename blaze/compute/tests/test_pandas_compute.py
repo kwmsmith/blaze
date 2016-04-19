@@ -171,14 +171,23 @@ def test_columns_series():
 
 def test_reductions():
     assert compute(mean(t['amount']), df) == 350 / 3
+    assert compute(mean(t['amount']), ndf) == 150 / 2
     assert compute(count(t['amount']), df) == 3
+    assert compute(count(t['amount']), ndf) == 2
     assert compute(sum(t['amount']), df) == 100 + 200 + 50
+    assert compute(sum(t['amount']), ndf) == 100.0 + 50.0
     assert compute(min(t['amount']), df) == 50
+    assert compute(min(t['amount']), ndf) == 50.0
     assert compute(max(t['amount']), df) == 200
+    assert compute(max(t['amount']), ndf) == 100.0
     assert compute(nunique(t['amount']), df) == 3
+    assert compute(nunique(t['amount']), ndf) == 2
     assert compute(nunique(t['name']), df) == 2
+    assert compute(nunique(t['name']), ndf) == 2
     assert compute(any(t['amount'] > 150), df) is True
+    assert compute(any(t['amount'] > 150), ndf) is False
     assert compute(any(t['amount'] > 250), df) is False
+    assert compute(any(t['amount'] > 250), ndf) is False
     assert compute(var(t['amount']), df) == df.amount.var(ddof=0)
     assert compute(var(t['amount'], unbiased=True), df) == df.amount.var()
     assert compute(std(t['amount']), df) == df.amount.std(ddof=0)
@@ -189,7 +198,9 @@ def test_reductions():
 
 def test_reductions_on_dataframes():
     assert compute(count(t), df) == 3
+    assert compute(count(t), ndf) == 3
     assert shape(compute(count(t, keepdims=True), df)) == (1,)
+    assert shape(compute(count(t, keepdims=True), ndf)) == (1,)
 
 
 def test_1d_reductions_keepdims():
