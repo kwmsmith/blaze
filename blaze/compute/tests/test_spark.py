@@ -108,7 +108,7 @@ exprs = [
     by(t['name'], total=(t['amount'] + 1).sum()),
     (t['amount'] * 1).label('foo'),
     t.map(lambda tup: tup[1] + tup[2], 'real'),
-    t[t.name.like('Alice')],
+    t[t.name.str.like('Alice')],
     t['amount'].apply(identity, 'var * real', splittable=True),
     t['amount'].map(lambda x: x + 1, 'int')
 ]
