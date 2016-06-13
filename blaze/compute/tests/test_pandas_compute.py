@@ -15,6 +15,7 @@ from string import ascii_lowercase
 from blaze.compute.core import compute
 from blaze.compute.pandas import pdsort
 from blaze import dshape, discover, transform, broadcast_collect
+import datashape
 from blaze.expr import symbol, join, by, summary, distinct, shape
 from blaze.expr import (merge, exp, mean, count, nunique, sum, min, max, any,
                         var, std, concat, coalesce)
@@ -709,75 +710,48 @@ def test_str_lower():
     result = compute(expr, df).reset_index(drop=True)
     assert_series_equal(expected, result)
 
-@pytest.mark.parametrize('old,new,max,expected', (
-    ('o', 'x', None, 'Sxmexne'),
-    ('o', 'x', 1, 'Sxmeone')))
-def test_str_replace(old, new, max, expected):
-    df = pd.Series(['Someone', None], name='name')
-    expr = nt.name.str.replace(old, new, max)
-    expected = pd.Series([expected, None], name='name')
-    result = compute(expr, df).reset_index(drop=True)
-    assert_series_equal(expected, result)
-    assert discover(result).measure == expr.dshape.measure
+# Data-driven parametrized inputs for string-column vectorized operations.
+inputs = [ # dshape, op, args, data, expected
+          ('string', 'replace', ['o', 'x'], ['Someone'], ['Sxmexne']),
+          ('string', 'replace', ['o', 'x', 1], ['Someone'], ['Sxmeone']),
+          ('string', 'capitalize', [], ['someone'], ['Someone']),
+          ('string', 'strip', [], [' someone '], ['someone']),
+          ('string', 'lstrip', [], [' someone '], ['someone ']),
+          ('string', 'rstrip', [], [' someone '], [' someone']),
+          ('string', 'pad', [10], ['someone'], ['   someone']),
+          ('string', 'pad', [10, 'left'], ['someone'], ['   someone']),
+          ('string', 'pad', [10, 'right'], ['someone'], ['someone   ']),
+          ('string', 'pad', [10, None, 'x'], ['someone'], ['xxxsomeone']),
+          ('string', 'slice_replace', [1, 3, 'x'], ['someone'], ['sxeone']),
+          ('string', 'slice_replace', [None, 3, 'x'], ['someone'], ['xeone']),
+          ('string', 'slice_replace', [1, None, 'x'], ['someone'], ['sx']),
+          ('string', 'slice_replace', [None, None, 'x'], ['someone'], ['x']),
+          ('string', 'slice_replace', [1, None, None], ['someone'], ['s']),
+          # TODO: slice
+          # TODO: cat
+          # TODO: find
+          ]
 
-def test_str_capitalize():
-    df = pd.Series(['someone', None], name='name')
-    expr = nt.name.str.capitalize()
-    expected = pd.Series(['Someone', None], name='name')
-    result = compute(expr, df).reset_index(drop=True)
-    assert_series_equal(expected, result)
-    assert discover(result).measure == expr.dshape.measure
+# Generate inputs with missing values based on above `inputs` sequence.
+na_inputs = [(datashape.Option(dshape),
+              op,
+              args,
+              data + [None],
+              expected + [None]) for
+             (dshape, op, args, data, expected) in inputs]
 
-def test_str_strip():
-    df = pd.Series([' someone ', None], name='name')
-    expr = nt.name.str.strip()
-    expected = pd.Series(['someone', None], name='name')
+@pytest.mark.parametrize('ds, op, args, data, expected', inputs + na_inputs)
+def test_str_ops(ds, op, args, data, expected):
+    df = pd.Series(data, name='name')
+    sym = symbol('t', datashape.var * datashape.R['name': ds])
+    expr = getattr(sym.name.str, op)(*args)
+    expected = pd.Series(expected, name='name')
     result = compute(expr, df).reset_index(drop=True)
     assert_series_equal(expected, result)
-    assert discover(result).measure == expr.dshape.measure
+    # Test that the option / non-option dshape of the column passes through to
+    # the expression's dshape.
+    assert sym.dshape.measure.dict['name'].measure == expr.dshape.measure
 
-def test_str_lstrip():
-    df = pd.Series([' someone ', None], name='name')
-    expr = nt.name.str.lstrip()
-    expected = pd.Series(['someone ', None], name='name')
-    result = compute(expr, df).reset_index(drop=True)
-    assert_series_equal(expected, result)
-    assert discover(result).measure == expr.dshape.measure
-
-def test_str_rstrip():
-    df = pd.Series([' someone ', None], name='name')
-    expr = nt.name.str.rstrip()
-    expected = pd.Series([' someone', None], name='name')
-    result = compute(expr, df).reset_index(drop=True)
-    assert_series_equal(expected, result)
-    assert discover(result).measure == expr.dshape.measure
-
-@pytest.mark.parametrize('width,side,fillchar, expected', (
-    (10, None, None, '   someone'),
-    (10, 'left', None, '   someone'),
-    (10, 'right', None, 'someone   '),
-    (10, None, 'x', 'xxxsomeone')))
-def test_str_pad(width, side, fillchar, expected):
-    df = pd.Series(['someone', None], name='name')
-    expr = nt.name.str.pad(width, side, fillchar)
-    expected = pd.Series([expected, None], name='name')
-    result = compute(expr, df).reset_index(drop=True)
-    assert_series_equal(expected, result)
-    assert discover(result).measure == expr.dshape.measure
-
-@pytest.mark.parametrize('start,stop,repl,expected', (
-    (1, 3, 'x', 'sxeone'),
-    (None, 3, 'x', 'xeone'),
-    (1, None, 'x', 'sx'),
-    (None, None, 'x', 'x'),
-    (1, None, None, 's')))
-def test_str_slice_replace(start, stop, repl, expected):
-    df = pd.Series(['someone', None], name='name')
-    expr = nt.name.str.slice_replace(start, stop, repl)
-    expected = pd.Series([expected, None], name='name')
-    result = compute(expr, df).reset_index(drop=True)
-    assert_series_equal(expected, result)
-    assert discover(result).measure == expr.dshape.measure
 
 @pytest.mark.parametrize('what,expected',
                          [('alnum', True),
