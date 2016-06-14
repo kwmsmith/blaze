@@ -95,6 +95,18 @@ def test_label():
     assert label(e, 'e').isidentical(e)
 
 
+def test_nested_label():
+    e = symbol('e', '3 * int')
+    # assert label(label(e, 'a'), 'b')._name == 'b'
+
+
+def test_nested_label_table():
+    t = symbol('t', 'var * {name: string}')
+    assert label(label(t.name, 'a'), 'b')._name == 'b'
+    assert label(t.name.label('a'), 'b')._name == 'b'
+    assert t.name.label('a').label('b')._name == 'b'
+
+
 def test_fields_with_spaces():
     e = symbol('e', '{x: int, "a b": int}')
     assert isinstance(e['a b'], Field)
