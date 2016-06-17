@@ -733,12 +733,14 @@ inputs = [ # dshape, op, args, data, expected
           ]
 
 # Generate inputs with missing values based on above `inputs` sequence.
-na_inputs = [(datashape.Option(dshape),
+na_inputs = [(datashape.Option(ds),
               op,
               args,
               data + [None],
               expected + [None]) for
-             (dshape, op, args, data, expected) in inputs]
+             (ds, op, args, data, expected) in inputs]
+# Address listcomp variable leakage in Py2.
+del ds, op, args, data, expected
 
 @pytest.mark.parametrize('ds, op, args, data, expected', inputs + na_inputs)
 def test_str_ops(ds, op, args, data, expected):
