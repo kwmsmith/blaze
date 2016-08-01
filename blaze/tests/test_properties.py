@@ -14,9 +14,10 @@ import pandas as pd
 import pandas.util.testing as tm
 from pandas import DataFrame, Series
 from string import ascii_lowercase
-from blaze.expr import symbol
+from blaze.expr import symbol, exp, distinct
 from blaze import broadcast_collect
 from blaze.compute.core import compute
+from blaze.expr import (mean, count, sum, min, max, nunique, any, var, std)
 
 @given(dfs=dataframes())
 def test_symbol(dfs):
@@ -100,6 +101,107 @@ def test_selection(dfs, op):
         val = 0
     tm.assert_frame_equal(compute(t[op(t[col], val)], dframe),
                           dframe[op(dframe[col], val)])
+
+unops = st.sampled_from({operator.abs,
+                         operator.neg})
+
+@given(dfs=dataframes(col_types=numeric_col_types), op=unops)
+def test_unary_op(dfs, op):
+    ds, dframe = dfs
+    dshape = datashape.dshape(ds)
+    cols = dshape.measure.names
+    t = symbol('t', dshape)
+    for col in cols:
+        tm.assert_series_equal(compute(op(t[col]), dframe),
+                               op(dframe[col]))
+
+np_unops = st.sampled_from({exp})
+
+@given(dfs=dataframes(col_types=numeric_col_types), op=np_unops)
+def test_unary_np_op(dfs, op):
+    np_op = getattr(np, op.__name__)
+    ds, dframe = dfs
+    dshape = datashape.dshape(ds)
+    cols = dshape.measure.names
+    t = symbol('t', dshape)
+    for col in cols:
+        tm.assert_series_equal(compute(op(t[col]), dframe),
+                               np_op(dframe[col]))
+
+reductions = {mean, sum, min, max, any, var, std, nunique, count}
+
+def pd_nunique(s):
+    return s.drop_duplicates().reset_index(drop=True).shape[0]
+
+def pd_count(s):
+    return s.shape[0]
+
+# TODO: Expand reductions to include more ops.
+# TODO: Include more column types (non-numeric) in col_types.
+@pytest.mark.parametrize('reduction', reductions)
+@given(dfs=dataframes(col_types=numeric_col_types))
+def test_reductions_columns(reduction, dfs):
+    ds, dframe = dfs
+    dshape = datashape.dshape(ds)
+    cols = dshape.measure.names
+    t = symbol('t', dshape)
+    try:
+        pd_reduction = getattr(pd.Series, reduction.__name__)
+    except AttributeError:
+        pd_reduction = {nunique: pd_nunique,
+                        count: pd_count}[reduction]
+    for col in cols:
+        r = reduction(t[col])
+        result = compute(r, dframe)
+        kwargs = dict(ddof=r.unbiased) if reduction in (std, var) else {}
+        expected = pd_reduction(dframe[col], **kwargs)
+        if np.isnan(result):
+            assert np.isnan(expected)
+        else:
+            assert result == expected
+
+tb_reductions = {count}
+
+def pd_count_table(t):
+    return len(t)
+
+# TODO: Expand tb_reductions to include more ops.
+@pytest.mark.parametrize('reduction', tb_reductions)
+@given(dfs=dataframes())
+def test_reductions_table(reduction, dfs):
+    ds, dframe = dfs
+    dshape = datashape.dshape(ds)
+    t = symbol('t', dshape)
+    pd_reduction = {count: pd_count_table}[reduction]
+    r = reduction(t)
+    result = compute(r, dframe)
+    expected = pd_reduction(dframe)
+    if np.isnan(result):
+        assert np.isnan(expected)
+    else:
+        assert result == expected
+
+
+def _concat_preserve_types(df):
+    dframe = pd.concat([df, df], ignore_index=True)
+    for col in dframe.columns:
+        if dframe[col].dtypes != df[col].dtypes and dframe[col].dtypes == np.float64:
+            dframe[col] = dframe[col].astype('float32')
+    return dframe
+
+
+@given(dfs=dataframes())
+def test_distinct(dfs):
+    ds, o_dframe = dfs
+    distinct_o_dframe = o_dframe.drop_duplicates().reset_index(drop=True)
+    dshape = datashape.var * datashape.dshape(ds).measure
+    dframe = _concat_preserve_types(o_dframe)
+    t = symbol('t', dshape)
+    distinct_df = compute(distinct(t), dframe)
+    tm.assert_frame_equal(distinct_df, distinct_o_dframe)
+    # idempotence.
+    tm.assert_frame_equal(compute(distinct(t), distinct_df), distinct_o_dframe)
+
 
 '''
 from blaze.compute.core import compute
@@ -222,19 +324,6 @@ def test_multi_column_join():
     assert list(result.columns) == list(j.fields)
 
 
-def test_unary_op():
-    assert (compute(exp(t['amount']), df) == np.exp(df['amount'])).all()
-
-
-def test_abs():
-    assert (compute(abs(t['amount']), df) == abs(df['amount'])).all()
-
-
-def test_neg():
-    assert_series_equal(compute(-t['amount'], df),
-                           -df['amount'])
-
-
 @xfail(reason='Projection does not support arithmetic')
 def test_neg_projection():
     assert_series_equal(compute(-t[['amount', 'id']], df),
@@ -244,29 +333,6 @@ def test_neg_projection():
 def test_columns_series():
     assert isinstance(compute(t['amount'], df), Series)
     assert isinstance(compute(t['amount'] > 150, df), Series)
-
-
-def test_reductions():
-    assert compute(mean(t['amount']), df) == 350 / 3
-    assert compute(count(t['amount']), df) == 3
-    assert compute(sum(t['amount']), df) == 100 + 200 + 50
-    assert compute(min(t['amount']), df) == 50
-    assert compute(max(t['amount']), df) == 200
-    assert compute(nunique(t['amount']), df) == 3
-    assert compute(nunique(t['name']), df) == 2
-    assert compute(any(t['amount'] > 150), df) is True
-    assert compute(any(t['amount'] > 250), df) is False
-    assert compute(var(t['amount']), df) == df.amount.var(ddof=0)
-    assert compute(var(t['amount'], unbiased=True), df) == df.amount.var()
-    assert compute(std(t['amount']), df) == df.amount.std(ddof=0)
-    assert compute(std(t['amount'], unbiased=True), df) == df.amount.std()
-    assert compute(t.amount[0], df) == df.amount.iloc[0]
-    assert compute(t.amount[-1], df) == df.amount.iloc[-1]
-
-
-def test_reductions_on_dataframes():
-    assert compute(count(t), df) == 3
-    assert shape(compute(count(t, keepdims=True), df)) == (1,)
 
 
 def test_1d_reductions_keepdims():
@@ -1275,6 +1341,40 @@ def test_arithmetic():
     assert_series_equal(compute(t['amount'] % t['id'], df),
                            df.amount % df.id)
 
+
+def test_unary_op():
+    assert (compute(exp(t['amount']), df) == np.exp(df['amount'])).all()
+
+
+def test_abs():
+    assert (compute(abs(t['amount']), df) == abs(df['amount'])).all()
+
+
+def test_neg():
+    assert_series_equal(compute(-t['amount'], df),
+                           -df['amount'])
+
+
+def test_reductions():
+    assert compute(mean(t['amount']), df) == 350 / 3
+    assert compute(count(t['amount']), df) == 3
+    assert compute(sum(t['amount']), df) == 100 + 200 + 50
+    assert compute(min(t['amount']), df) == 50
+    assert compute(max(t['amount']), df) == 200
+    assert compute(nunique(t['amount']), df) == 3
+    assert compute(nunique(t['name']), df) == 2
+    assert compute(any(t['amount'] > 150), df) is True
+    assert compute(any(t['amount'] > 250), df) is False
+    assert compute(var(t['amount']), df) == df.amount.var(ddof=0)
+    assert compute(var(t['amount'], unbiased=True), df) == df.amount.var()
+    assert compute(std(t['amount']), df) == df.amount.std(ddof=0)
+    assert compute(std(t['amount'], unbiased=True), df) == df.amount.std()
+    assert compute(t.amount[0], df) == df.amount.iloc[0]
+    assert compute(t.amount[-1], df) == df.amount.iloc[-1]
+
+def test_reductions_on_dataframes():
+    assert compute(count(t), df) == 3
+    assert shape(compute(count(t, keepdims=True), df)) == (1,)
 
 
 
