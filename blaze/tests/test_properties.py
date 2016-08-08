@@ -5,7 +5,7 @@ import pytest
 from hypothesis import given
 import hypothesis.strategies as st
 import datashape
-from datashape.tests.utils import dataframes, numeric_col_types
+from datashape.tests.utils import dataframes, dataframes_with_dupes, numeric_col_types
 
 from datetime import datetime, timedelta, date, time
 import operator
@@ -14,9 +14,10 @@ import pandas as pd
 import pandas.util.testing as tm
 from pandas import DataFrame, Series
 from string import ascii_lowercase
-from blaze.expr import symbol, exp, distinct
+from blaze.expr import symbol, exp, distinct, by, label
 from blaze import broadcast_collect
 from blaze.compute.core import compute
+from blaze.compute.pandas import pdsort
 from blaze.expr import (mean, count, sum, min, max, nunique, any, var, std)
 
 @given(dfs=dataframes())
@@ -182,6 +183,31 @@ def test_reductions_table(reduction, dfs):
         assert result == expected
 
 
+def _consistent_coerce(df0, df1):
+    if np.any(df0.columns != df1.columns):
+        msg = "columns not consistent: {} {}"
+        raise ValueError(msg.format(df0.columns, df1.columns))
+    new_df0 = df0.copy()
+    new_df1 = df1.copy()
+    for col0 in df0.columns:
+        dt0 = df0[col0].dtypes
+        dt1 = df1[col0].dtypes
+        if {dt0, dt1} == {np.dtype('float32'), np.dtype('float64')}:
+            if dt0 == np.float32:
+                new_df0[col0] = df0[col0].astype(np.float64)
+            if dt1 == np.float32:
+                new_df1[col0] = df1[col0].astype(np.float64)
+    return new_df0, new_df1
+
+
+def _coerce_dframe_to_dshape(df, ds):
+    for col in df.columns:
+        if (df[col].dtypes == np.float64 and
+                str(ds.measure.dict[col]) in ('float32', '?float32')):
+            df[col] = df[col].astype('float32')
+    return df
+
+
 def _concat_preserve_types(df):
     dframe = pd.concat([df, df], ignore_index=True)
     for col in dframe.columns:
@@ -190,17 +216,96 @@ def _concat_preserve_types(df):
     return dframe
 
 
-@given(dfs=dataframes())
+@given(dfs=dataframes_with_dupes())
 def test_distinct(dfs):
-    ds, o_dframe = dfs
+    dshape, o_dframe = dfs
     distinct_o_dframe = o_dframe.drop_duplicates().reset_index(drop=True)
-    dshape = datashape.var * datashape.dshape(ds).measure
-    dframe = _concat_preserve_types(o_dframe)
     t = symbol('t', dshape)
-    distinct_df = compute(distinct(t), dframe)
+    distinct_df = compute(distinct(t), o_dframe)
     tm.assert_frame_equal(distinct_df, distinct_o_dframe)
     # idempotence.
     tm.assert_frame_equal(compute(distinct(t), distinct_df), distinct_o_dframe)
+
+
+@given(dfs=dataframes_with_dupes())
+def test_distinct_on(dfs):
+    dshape, o_dframe = dfs
+    cols = datashape.dshape(dshape).measure.names[::2]
+    distinct_o_dframe = o_dframe.drop_duplicates(cols).reset_index(drop=True)
+    t = symbol('t', dshape)
+    distinct_df = compute(distinct(t, *cols), o_dframe)
+    tm.assert_frame_equal(distinct_df, distinct_o_dframe)
+
+
+@given(dfs=dataframes_with_dupes(dfs=dataframes(col_types=numeric_col_types,
+                                                min_cols=2)))
+def test_by(dfs):
+    dshape, dframe = dfs
+    dshape = datashape.dshape(dshape)
+    cols = dshape.measure.names
+    group_cols = cols[::2]
+    r_cols = cols[1::2]
+    t = symbol('t', dshape)
+    gb_reductions = {n: sum(t[n]) for n in r_cols}
+    e = by(t[group_cols], **gb_reductions)
+    result = compute(e, dframe)
+    expected = dframe.groupby(group_cols)[r_cols].sum().reset_index()
+    assert set(expected.columns) == set(result.columns)
+    expected = expected[result.columns] # Impose consistent column ordering,
+                                        # since the order of the **gb_reductions
+                                        # is not deterministic.
+    _result, _expected = _consistent_coerce(result, expected)
+    tm.assert_frame_equal(_result, _expected)
+
+
+@given(dfs=dataframes(min_cols=1),
+       ascending=st.booleans())
+def test_sort(dfs, ascending):
+    dshape, dframe = dfs
+    colnames = datashape.dshape(dshape).measure.names
+    cols = colnames[::2]
+    t = symbol('t', dshape)
+    result = compute(t.sort(cols, ascending=ascending), dframe)
+    expected = pdsort(dframe, cols, ascending=ascending)
+    tm.assert_frame_equal(result, expected)
+
+
+# TODO: have to use max_value here since Pandas can't handle "big" integers.
+@given(dfs=dataframes(),
+       n=st.integers(min_value=0, max_value=10**10),
+       op=st.sampled_from(['head', 'tail']))
+def test_head_tail(dfs, n, op):
+    dshape, dframe = dfs
+    dshape = datashape.dshape(dshape)
+    t = symbol('t', dshape)
+    tm.assert_frame_equal(compute(getattr(t, op)(n), dframe),
+                          getattr(dframe, op)(n))
+
+
+@given(dfs=dataframes(min_rows=1, max_rows=10),
+       arg=st.integers(min_value=1, max_value=20),
+       n_or_frac=st.sampled_from(['n', 'frac']))
+def test_sample(dfs, arg, n_or_frac):
+    dshape, dframe = dfs
+    t = symbol('t', dshape)
+    kwarg = {n_or_frac: arg if n_or_frac == 'n' else float(arg) / 20}
+    samp = compute(t.sample(**kwarg), dframe)
+    df_clean = dframe.fillna(-42.42)
+    samp_clean = samp.fillna(-42.42)
+    df_tuples = set(df_clean.itertuples(index=False))
+    samp_tuples = set(samp_clean.itertuples(index=False))
+    assert samp_tuples <= df_tuples
+
+
+@given(dfs=dataframes(col_types=numeric_col_types))
+def test_map(dfs):
+    dshape, dframe = dfs
+    t = symbol('t', dshape)
+    cols = list(dframe.columns)
+    f = lambda *args: sum(args)
+    result = compute(t.map(f, 'float64'), dframe)
+    expected = np.sum([dframe[c] for c in cols])
+    tm.assert_series_equal(result, expected)
 
 
 '''
@@ -342,88 +447,6 @@ def test_1d_reductions_keepdims():
         assert type(result) == type(series)
 
 
-def test_distinct():
-    dftoobig = DataFrame([['Alice', 'F', 100, 1],
-                          ['Alice', 'F', 100, 1],
-                          ['Alice', 'F', 100, 3],
-                          ['Drew', 'F', 100, 4],
-                          ['Drew', 'M', 100, 5],
-                          ['Drew', 'F', 100, 4],
-                          ['Drew', 'M', 100, 5],
-                          ['Drew', 'M', 200, 5],
-                          ['Drew', 'M', 200, 5]],
-                         columns=['name', 'sex', 'amount', 'id'])
-    d_t = distinct(tbig)
-    d_df = compute(d_t, dftoobig)
-    tm.assert_frame_equal(d_df, dfbig)
-    # Test idempotence
-    tm.assert_frame_equal(compute(d_t, d_df), d_df)
-
-
-def test_distinct_on():
-    cols = ['name', 'sex', 'amount', 'id']
-    df = DataFrame([['Alice', 'F', 100, 1],
-                    ['Alice', 'F', 100, 3],
-                    ['Drew', 'F', 100, 4],
-                    ['Drew', 'M', 100, 5],
-                    ['Drew', 'F', 100, 4],
-                    ['Drew', 'M', 100, 5],
-                    ['Drew', 'M', 200, 5]],
-                   columns=cols)
-    s = symbol('s', discover(df))
-    computed = compute(s.distinct('sex'), df)
-    tm.assert_frame_equal(
-        computed,
-        pd.DataFrame([['Alice', 'F', 100, 1],
-                      ['Drew', 'M', 100, 5]],
-                     columns=cols),
-    )
-
-
-def test_by_one():
-    result = compute(by(t['name'], total=t['amount'].sum()), df)
-    expected = df.groupby('name')['amount'].sum().reset_index()
-    expected.columns = ['name', 'total']
-    tm.assert_frame_equal(result, expected)
-
-
-def test_by_two():
-    result = compute(by(tbig[['name', 'sex']],
-                        total=sum(tbig['amount'])), dfbig)
-
-    expected = DataFrame([['Alice', 'F', 200],
-                          ['Drew', 'F', 100],
-                          ['Drew', 'M', 300]],
-                         columns=['name', 'sex', 'total'])
-
-    tm.assert_frame_equal(result, expected)
-
-
-def test_by_three():
-
-    expr = by(tbig[['name', 'sex']],
-              total=(tbig['id'] + tbig['amount']).sum())
-
-    result = compute(expr, dfbig)
-
-    expected = DataFrame([['Alice', 'F', 204],
-                          ['Drew', 'F', 104],
-                          ['Drew', 'M', 310]], columns=['name', 'sex', 'total'])
-    expected.columns = expr.fields
-    tm.assert_frame_equal(result, expected)
-
-
-def test_by_four():
-    t = tbig[['sex', 'amount']]
-    expr = by(t['sex'], max=t['amount'].max())
-    result = compute(expr, dfbig)
-
-    expected = DataFrame([['F', 100],
-                          ['M', 200]], columns=['sex', 'max'])
-
-    tm.assert_frame_equal(result, expected)
-
-
 def test_join_by_arcs():
     df_idx = DataFrame([['A', 1],
                         ['B', 2],
@@ -485,61 +508,10 @@ def test_join_promotion():
     tm.assert_frame_equal(result, expected)
 
 
-def test_sort():
-    tm.assert_frame_equal(compute(t.sort('amount'), df),
-                          pdsort(df, 'amount'))
-
-    tm.assert_frame_equal(compute(t.sort('amount', ascending=True), df),
-                          pdsort(df, 'amount', ascending=True))
-
-    tm.assert_frame_equal(compute(t.sort(['amount', 'id']), df),
-                          pdsort(df, ['amount', 'id']))
-
-
-def test_sort_on_series_no_warning(recwarn):
-    expected = df.amount.order()
-
-    recwarn.clear()
-
-    assert_series_equal(compute(t['amount'].sort('amount'), df), expected)
-
-    # raises as assertion error if no warning occurs, same thing for below
-    with pytest.raises(AssertionError):
-        assert recwarn.pop(FutureWarning)
-
-    assert_series_equal(compute(t['amount'].sort(), df), expected)
-    with pytest.raises(AssertionError):
-        assert recwarn.pop(FutureWarning)
-
-
 def test_field_on_series():
     expr = symbol('s', 'var * int')
     data = Series([1, 2, 3, 4], name='s')
     assert_series_equal(compute(expr.s, data), data)
-
-
-def test_head():
-    tm.assert_frame_equal(compute(t.head(1), df), df.head(1))
-
-
-def test_tail():
-    tm.assert_frame_equal(compute(t.tail(1), df), df.tail(1))
-
-
-def test_sample():
-    samp = compute(t.sample(n=2), df)
-    assert len(samp) == 2
-
-
-def test_sample_frac_rounding_edge_case():
-    samp_big = compute(tbig.sample(frac=0.1), dfbig)
-    assert len(samp_big) == int(np.ceil(len(dfbig) * 0.1))
-
-
-def test_sample_clip():
-    samp_series = compute(t.name.sample(n=2*len(df)), df)
-    samp_df = compute(t.sample(n=2*len(df)), df)
-    assert len(samp_series) == len(samp_df) == len(df)
 
 
 def test_label():
@@ -1377,5 +1349,134 @@ def test_reductions_on_dataframes():
     assert shape(compute(count(t, keepdims=True), df)) == (1,)
 
 
+def test_distinct():
+    dftoobig = DataFrame([['Alice', 'F', 100, 1],
+                          ['Alice', 'F', 100, 1],
+                          ['Alice', 'F', 100, 3],
+                          ['Drew', 'F', 100, 4],
+                          ['Drew', 'M', 100, 5],
+                          ['Drew', 'F', 100, 4],
+                          ['Drew', 'M', 100, 5],
+                          ['Drew', 'M', 200, 5],
+                          ['Drew', 'M', 200, 5]],
+                         columns=['name', 'sex', 'amount', 'id'])
+    d_t = distinct(tbig)
+    d_df = compute(d_t, dftoobig)
+    tm.assert_frame_equal(d_df, dfbig)
+    # Test idempotence
+    tm.assert_frame_equal(compute(d_t, d_df), d_df)
 
+
+def test_distinct_on():
+    cols = ['name', 'sex', 'amount', 'id']
+    df = DataFrame([['Alice', 'F', 100, 1],
+                    ['Alice', 'F', 100, 3],
+                    ['Drew', 'F', 100, 4],
+                    ['Drew', 'M', 100, 5],
+                    ['Drew', 'F', 100, 4],
+                    ['Drew', 'M', 100, 5],
+                    ['Drew', 'M', 200, 5]],
+                   columns=cols)
+    s = symbol('s', discover(df))
+    computed = compute(s.distinct('sex'), df)
+    tm.assert_frame_equal(
+        computed,
+        pd.DataFrame([['Alice', 'F', 100, 1],
+                      ['Drew', 'M', 100, 5]],
+                     columns=cols),
+    )
+
+
+def test_by_one():
+    result = compute(by(t['name'], total=t['amount'].sum()), df)
+    expected = df.groupby('name')['amount'].sum().reset_index()
+    expected.columns = ['name', 'total']
+    tm.assert_frame_equal(result, expected)
+
+
+def test_by_two():
+    result = compute(by(tbig[['name', 'sex']],
+                        total=sum(tbig['amount'])), dfbig)
+
+    expected = DataFrame([['Alice', 'F', 200],
+                          ['Drew', 'F', 100],
+                          ['Drew', 'M', 300]],
+                         columns=['name', 'sex', 'total'])
+
+    tm.assert_frame_equal(result, expected)
+
+
+def test_by_three():
+
+    expr = by(tbig[['name', 'sex']],
+              total=(tbig['id'] + tbig['amount']).sum())
+
+    result = compute(expr, dfbig)
+
+    expected = DataFrame([['Alice', 'F', 204],
+                          ['Drew', 'F', 104],
+                          ['Drew', 'M', 310]], columns=['name', 'sex', 'total'])
+    expected.columns = expr.fields
+    tm.assert_frame_equal(result, expected)
+
+
+def test_by_four():
+    t = tbig[['sex', 'amount']]
+    expr = by(t['sex'], max=t['amount'].max())
+    result = compute(expr, dfbig)
+
+    expected = DataFrame([['F', 100],
+                          ['M', 200]], columns=['sex', 'max'])
+
+    tm.assert_frame_equal(result, expected)
+
+
+def test_sort():
+    tm.assert_frame_equal(compute(t.sort('amount'), df),
+                          pdsort(df, 'amount'))
+
+    tm.assert_frame_equal(compute(t.sort('amount', ascending=True), df),
+                          pdsort(df, 'amount', ascending=True))
+
+    tm.assert_frame_equal(compute(t.sort(['amount', 'id']), df),
+                          pdsort(df, ['amount', 'id']))
+
+
+def test_sort_on_series_no_warning(recwarn):
+    expected = df.amount.order()
+
+    recwarn.clear()
+
+    assert_series_equal(compute(t['amount'].sort('amount'), df), expected)
+
+    # raises as assertion error if no warning occurs, same thing for below
+    with pytest.raises(AssertionError):
+        assert recwarn.pop(FutureWarning)
+
+    assert_series_equal(compute(t['amount'].sort(), df), expected)
+    with pytest.raises(AssertionError):
+        assert recwarn.pop(FutureWarning)
+
+def test_head():
+    tm.assert_frame_equal(compute(t.head(1), df), df.head(1))
+
+
+def test_tail():
+    tm.assert_frame_equal(compute(t.tail(1), df), df.tail(1))
+
+
+def test_sample():
+    samp = compute(t.sample(n=2), df)
+    assert len(samp) == 2
+
+
+def test_sample_frac_rounding_edge_case():
+    samp_big = compute(tbig.sample(frac=0.1), dfbig)
+    assert len(samp_big) == int(np.ceil(len(dfbig) * 0.1))
+
+
+def test_sample_clip():
+    samp_series = compute(t.name.sample(n=2*len(df)), df)
+    samp_df = compute(t.sample(n=2*len(df)), df)
+    assert len(samp_series) == len(samp_df) == len(df)
 '''
