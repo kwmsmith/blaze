@@ -2,23 +2,27 @@ from __future__ import absolute_import, division, print_function
 
 import pytest
 
+
 from hypothesis import given
 import hypothesis.strategies as st
 import datashape
 from datashape.tests.utils import dataframes, dataframes_with_dupes, numeric_col_types
 
+import os
 from datetime import datetime, timedelta, date, time
 import operator
+import itertools
 import numpy as np
 import pandas as pd
 import pandas.util.testing as tm
 from pandas import DataFrame, Series
 from string import ascii_lowercase
 from blaze.expr import symbol, exp, distinct, by, label
-from blaze import broadcast_collect
+from blaze import broadcast_collect, data
 from blaze.compute.core import compute
 from blaze.compute.pandas import pdsort
 from blaze.expr import (mean, count, sum, min, max, nunique, any, var, std)
+from odo import odo, drop, discover
 
 @given(dfs=dataframes())
 def test_symbol(dfs):
@@ -297,8 +301,8 @@ def test_sample(dfs, arg, n_or_frac):
     assert samp_tuples <= df_tuples
 
 
-@given(dfs=dataframes(col_types=numeric_col_types))
-def test_map(dfs):
+@given(dfs=dataframes(col_types=numeric_col_types, min_rows=1))
+def _test_map(dfs):
     dshape, dframe = dfs
     t = symbol('t', dshape)
     cols = list(dframe.columns)
@@ -306,6 +310,34 @@ def test_map(dfs):
     result = compute(t.map(f, 'float64'), dframe)
     expected = np.sum([dframe[c] for c in cols])
     tm.assert_series_equal(result, expected)
+
+@pytest.fixture(scope='module')
+def pg_ip():
+    return os.environ.get('POSTGRES_IP', 'localhost')
+
+names = ('tbl%d' % i for i in itertools.count())
+
+@pytest.fixture
+def pg_url(pg_ip):
+    return 'postgresql://postgres@{}/test::%s'.format(pg_ip)
+
+# TODO: Expand supported types.
+@given(dfs=dataframes(col_types={
+    'int32', '?int32', 'int64', '?int64', 'float32', '?float32', 'float64', '?float64', 'string', '?string',
+    }))
+def test_odo_to_postgres(dfs, pg_url):
+    dshape, dframe = dfs
+    print(dframe)
+    t = symbol('t', dshape)
+    _url = pg_url % next(names)
+    x = data(_url, dshape=dshape)
+    try:
+        # if '?int' in dshape:
+            # import pdb; pdb.set_trace()
+        o = odo(dframe, x, dshape=dshape)
+        x = data(o)
+    finally:
+        drop(x)
 
 
 '''
