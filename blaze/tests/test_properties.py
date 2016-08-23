@@ -321,9 +321,9 @@ names = ('tbl%d' % i for i in itertools.count())
 def pg_url(pg_ip):
     return 'postgresql://postgres@{}/test::%s'.format(pg_ip)
 
-# TODO: Expand supported types.
+# TODO: Expand supported types.  Currently don't support ?int32 and ?int64.
 @given(dfs=dataframes(col_types={
-    'int32', '?int32', 'int64', '?int64', 'float32', '?float32', 'float64', '?float64', 'string', '?string',
+    'int32', 'int64', 'float32', '?float32', 'float64', '?float64', 'string', '?string',
     }))
 def test_odo_to_postgres(dfs, pg_url):
     dshape, dframe = dfs
@@ -332,8 +332,6 @@ def test_odo_to_postgres(dfs, pg_url):
     _url = pg_url % next(names)
     x = data(_url, dshape=dshape)
     try:
-        # if '?int' in dshape:
-            # import pdb; pdb.set_trace()
         o = odo(dframe, x, dshape=dshape)
         x = data(o)
     finally:
